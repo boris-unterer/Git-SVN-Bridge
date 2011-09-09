@@ -147,7 +147,7 @@ my %cmd = (
 	                  "Deprecated alias for ".
 			  "'$0 init -T<trunk> -b<branches> -t<tags>'",
 			  \%init_opts ],
-	dcommit => [ \&cmd_dcommit,
+	commit => [ \&cmd_commit,
 	             'Commit several diffs to merge with upstream',
 			{ 'merge|m|M' => \$_merge,
 			  'strategy|s=s' => \$_strategy,
@@ -497,11 +497,11 @@ sub cmd_set_tree {
 	unlink $gs->{index};
 }
 
-sub cmd_dcommit {
+sub cmd_commit {
 	my $head = shift;
 	command_noisy(qw/update-index --refresh/);
 	git_cmd_try { command_oneline(qw/diff-index --quiet HEAD/) }
-		'Cannot dcommit with a dirty index.  Commit your changes first, '
+		'Cannot commit with a dirty index.  Commit your changes first, '
 		. "or stash them with `git stash'.\n";
 	$head ||= 'HEAD';
 
@@ -518,11 +518,29 @@ sub cmd_dcommit {
 		command(['checkout', $head], STDERR => 0);
 	}
 
+	# lookup head tree and get list of commits since last push
 	my @refs;
 	my ($url, $rev, $uuid, $gs) = working_head_info('HEAD', \@refs);
 	unless ($gs) {
 		die "Unable to determine upstream SVN information from ",
 		    "$head history.\nPerhaps the repository is empty.";
+	}
+
+	# fetch upstream changes first
+	$_fetch_all ? $gs->fetch_all : $gs->fetch;
+
+	# compare head's lastest revision with remote ref revision
+	if ($rev < $gs->{last_rev}) {
+		# merge with remote ref
+		command_noisy('merge', $gs->refname);
+	}
+
+	# now lookup again
+	undef @refs;
+	($url, $rev, $uuid, $gs) = working_head_info('HEAD', \@refs);
+	unless ($gs) {
+		die "Unable to determine upstream SVN information from ",
+		    "merged history.";
 	}
 
 	if (defined $_commit_url) {
@@ -535,120 +553,53 @@ sub cmd_dcommit {
 		}
 	}
 
-	my $last_rev = $_revision if defined $_revision;
+	my $last_commit = $_revision if defined $_revision;
 	if ($url) {
 		print "Committing to $url ...\n";
 	}
-	my ($linear_refs, $parents) = linearize_history($gs, \@refs);
-	if ($_no_rebase && scalar(@$linear_refs) > 1) {
-		warn "Attempting to commit more than one change while ",
-		     "--no-rebase is enabled.\n",
-		     "If these changes depend on each other, re-running ",
-		     "without --no-rebase may be required."
-	}
+
 	my $expect_url = $url;
 	Git::SVN::remove_username($expect_url);
-	while (1) {
-		my $d = shift @$linear_refs or last;
-		unless (defined $last_rev) {
-			(undef, $last_rev, undef) = cmt_metadata("$d~1");
-			unless (defined $last_rev) {
-				fatal "Unable to extract revision information ",
-				      "from commit $d~1";
-			}
-		}
-		if ($_dry_run) {
-			print "diff-tree $d~1 $d\n";
-		} else {
-			my $cmt_rev;
-			my %ed_opts = ( r => $last_rev,
-			                log => get_commit_entry($d)->{log},
-			                ra => Git::SVN::Ra->new($url),
-			                config => SVN::Core::config_get_config(
-			                        $Git::SVN::Ra::config_dir
-			                ),
-			                tree_a => "$d~1",
-			                tree_b => $d,
-			                editor_cb => sub {
-			                       print "Committed r$_[0]\n";
-			                       $cmt_rev = $_[0];
-			                },
-					mergeinfo => $_merge_info,
-			                svn_path => '');
-			if (!SVN::Git::Editor->new(\%ed_opts)->apply_diff) {
-				print "No changes\n$d~1 == $d\n";
-			} elsif ($parents->{$d} && @{$parents->{$d}}) {
-				$gs->{inject_parents_dcommit}->{$cmt_rev} =
-				                               $parents->{$d};
-			}
-			$_fetch_all ? $gs->fetch_all : $gs->fetch;
-			$last_rev = $cmt_rev;
-			next if $_no_rebase;
+	my $d = $refs[$#refs];
+	my $parent = $refs[0];
 
-			# we always want to rebase against the current HEAD,
-			# not any head that was passed to us
-			my @diff = command('diff-tree', $d,
-			                   $gs->refname, '--');
-			my @finish;
-			if (@diff) {
-				@finish = rebase_cmd();
-				print STDERR "W: $d and ", $gs->refname,
-				             " differ, using @finish:\n",
-				             join("\n", @diff), "\n";
-			} else {
-				print "No changes between current HEAD and ",
-				      $gs->refname,
-				      "\nResetting to the latest ",
-				      $gs->refname, "\n";
-				@finish = qw/reset --mixed/;
-			}
-			command_noisy(@finish, $gs->refname);
-			if (@diff) {
-				@refs = ();
-				my ($url_, $rev_, $uuid_, $gs_) =
-				              working_head_info('HEAD', \@refs);
-				my ($linear_refs_, $parents_) =
-				              linearize_history($gs_, \@refs);
-				if (scalar(@$linear_refs) !=
-				    scalar(@$linear_refs_)) {
-					fatal "# of revisions changed ",
-					  "\nbefore:\n",
-					  join("\n", @$linear_refs),
-					  "\n\nafter:\n",
-					  join("\n", @$linear_refs_), "\n",
-					  'If you are attempting to commit ',
-					  "merges, try running:\n\t",
-					  'git rebase --interactive',
-					  '--preserve-merges ',
-					  $gs->refname,
-					  "\nBefore dcommitting";
-				}
-				if ($url_ ne $expect_url) {
-					if ($url_ eq $gs->metadata_url) {
-						print
-						  "Accepting rewritten URL:",
-						  " $url_\n";
-					} else {
-						fatal
-						  "URL mismatch after rebase:",
-						  " $url_ != $expect_url";
-					}
-				}
-				if ($uuid_ ne $uuid) {
-					fatal "uuid mismatch after rebase: ",
-					      "$uuid_ != $uuid";
-				}
-				# remap parents
-				my (%p, @l, $i);
-				for ($i = 0; $i < scalar @$linear_refs; $i++) {
-					my $new = $linear_refs_->[$i] or next;
-					$p{$new} =
-						$parents->{$linear_refs->[$i]};
-					push @l, $new;
-				}
-				$parents = \%p;
-				$linear_refs = \@l;
-			}
+	#print "... iterating through $d with parent $parent\n";
+	unless (defined $last_commit) {
+		(undef, $last_commit, undef) = cmt_metadata($parent);
+		unless (defined $last_commit) {
+			fatal "Unable to extract revision information ",
+			      "from commit " . $parent;
+		}
+	}
+	if ($_dry_run) {
+		print "diff-tree $parent $d\n";
+	} else {
+		my $cmt_rev;
+		my $log_entry = get_commit_entry($d);
+		my %ed_opts = ( r => $last_commit,
+		                log => $log_entry->{log},
+		                ra => Git::SVN::Ra->new($url),
+		                config => SVN::Core::config_get_config(
+		                        $Git::SVN::Ra::config_dir
+		                ),
+		                tree_a => $parent,
+		                tree_b => $d,
+		                editor_cb => sub {
+		                       print "Committed r$_[0] ($parent..$d)\n";
+		                       $cmt_rev = $_[0];
+		                },
+							 mergeinfo => $_merge_info,
+		                svn_path => '');
+		if (!SVN::Git::Editor->new(\%ed_opts)->apply_diff) {
+			print "No changes\n$parent == $d\n";
+		} else {
+			$gs->{inject_parents_commit}->{$cmt_rev} = [$parent];
+			$gs->{inject_commit} = [$d, $cmt_rev];
+			#$_fetch_all ? $gs->fetch_all : $gs->fetch;
+			# commit it right away, without re-fetching
+			my @parents;
+			my $log_entry = $gs->make_log_entry($cmt_rev, \@parents, SVN::Git::Fetcher->new($gs));
+			$gs->do_git_commit($log_entry);
 		}
 	}
 
@@ -658,9 +609,9 @@ sub cmd_dcommit {
 			command_oneline(qw/symbolic-ref -q HEAD/);
 		};
 		if ($new_is_symbolic) {
-			print "dcommitted the branch ", $head, "\n";
+			print "committed the branch ", $head, "\n";
 		} else {
-			print "dcommitted on a detached HEAD because you gave ",
+			print "committed on a detached HEAD because you gave ",
 			      "a revision argument.\n",
 			      "The rewritten commit is: ", $new_head, "\n";
 		}
@@ -1019,8 +970,8 @@ sub cmd_commit_diff {
 	            "<tree-ish> <tree-ish> [<URL>]";
 	fatal($usage) if (!defined $ta || !defined $tb);
 	my $svn_path = '';
+	my $gs = eval { Git::SVN->new };
 	if (!defined $url) {
-		my $gs = eval { Git::SVN->new };
 		if (!$gs) {
 			fatal("Needed URL or usable git-svn --id in ",
 			      "the command-line\n", $usage);
@@ -1048,15 +999,24 @@ sub cmd_commit_diff {
 	} elsif ($r !~ /^\d+$/) {
 		die "revision argument: $r not understood by git-svn\n";
 	}
+	my $cmt_rev;
 	my %ed_opts = ( r => $r,
 	                log => $_message,
 	                ra => $ra,
 	                tree_a => $ta,
 	                tree_b => $tb,
-	                editor_cb => sub { print "Committed r$_[0]\n" },
+	                editor_cb => sub { print "Committed r$_[0]\n"; $cmt_rev = $_[0]; },
 	                svn_path => $svn_path );
 	if (!SVN::Git::Editor->new(\%ed_opts)->apply_diff) {
 		print "No changes\n$ta == $tb\n";
+	} else {
+		$gs->{inject_commit} = [$tb, $cmt_rev];
+		my @parents;
+		my $log_entry = $gs->make_log_entry($tb, \@parents, SVN::Git::Fetcher->new($gs));
+		$log_entry->{revision} = $cmt_rev;
+		# commit it right away, without re-fetching
+		$gs->do_git_commit($log_entry);
+		command_noisy(qw/reset --mixed/, $gs->refname);
 	}
 }
 
@@ -1352,8 +1312,7 @@ sub get_commit_entry {
 
 	my $type = command_oneline(qw/cat-file -t/, $treeish);
 	if ($type eq 'commit' || $type eq 'tag') {
-		my ($msg_fh, $ctx) = command_output_pipe('cat-file',
-		                                         $type, $treeish);
+		my ($msg_fh, $ctx) = command_output_pipe('cat-file', $type, $treeish);
 		my $in_msg = 0;
 		my $author;
 		my $saw_from = 0;
@@ -1492,8 +1451,14 @@ sub extract_metadata {
 }
 
 sub cmt_metadata {
-	return extract_metadata((grep(/^git-svn-id: /,
-		command(qw/cat-file commit/, shift)))[-1]);
+	my $commit = shift;
+	my($url, $rev, $uuid) = extract_metadata((grep(/^git-svn-id: /,
+		command(qw/cat-file commit/, $commit)))[-1]);
+	unless (defined $rev) {
+		($url, $rev, $uuid) = eval { extract_metadata((grep(/^git-svn-id: /, 
+						command([qw/notes --ref=git-svn show/, $commit], STDERR => 0)))[-1]); };
+	}
+	return ($url, $rev, $uuid);
 }
 
 sub cmt_sha2rev_batch {
@@ -1532,25 +1497,39 @@ sub cmt_sha2rev_batch {
 
 sub working_head_info {
 	my ($head, $refs) = @_;
-	my @args = qw/log --no-color --no-decorate --first-parent
-	              --pretty=medium/;
+	my @args = qw/log --no-color --no-decorate --date-order --pretty=medium --parents --notes=git-svn/;
 	my ($fh, $ctx) = command_output_pipe(@args, $head);
 	my $hash;
+	my %children;
 	my %max;
 	while (<$fh>) {
-		if ( m{^commit ($::sha1)$} ) {
-			unshift @$refs, $hash if $hash and $refs;
+		if ( m{^commit ($::sha1) ?(.*)$} ) {
 			$hash = $1;
+			foreach my $parent (split(/ /, $2)) {
+				push @{$children{$parent}}, $hash;
+#print "...matched $parent with children " . join(", ", @{$children{$parent}}) . "\n"; 
+			}
 			next;
 		}
 		next unless s{^\s*(git-svn-id:)}{$1};
 		my ($url, $rev, $uuid) = extract_metadata($_);
 		if (defined $url && defined $rev) {
 			next if $max{$url} and $max{$url} < $rev;
+#print "...workhead check $hash (rev $rev)\n";
 			if (my $gs = Git::SVN->find_by_url($url)) {
 				my $c = $gs->rev_map_get($rev, $uuid);
 				if ($c && $c eq $hash) {
 					close $fh; # break the pipe
+					# build history forwards
+					if ($hash and $refs) {
+						while (defined $hash) {
+							push @$refs, $hash;
+							# prefer left children
+							$hash = @{$children{$hash}}[0];
+						}
+					}
+
+#print "hist ".join("\nhist ", @$refs) . "\n";
 					return ($url, $rev, $uuid, $gs);
 				} else {
 					$max{$url} ||= $gs->rev_map_max;
@@ -1560,54 +1539,6 @@ sub working_head_info {
 	}
 	command_close_pipe($fh, $ctx);
 	(undef, undef, undef, undef);
-}
-
-sub read_commit_parents {
-	my ($parents, $c) = @_;
-	chomp(my $p = command_oneline(qw/rev-list --parents -1/, $c));
-	$p =~ s/^($c)\s*// or die "rev-list --parents -1 $c failed!\n";
-	@{$parents->{$c}} = split(/ /, $p);
-}
-
-sub linearize_history {
-	my ($gs, $refs) = @_;
-	my %parents;
-	foreach my $c (@$refs) {
-		read_commit_parents(\%parents, $c);
-	}
-
-	my @linear_refs;
-	my %skip = ();
-	my $last_svn_commit = $gs->last_commit;
-	foreach my $c (reverse @$refs) {
-		next if $c eq $last_svn_commit;
-		last if $skip{$c};
-
-		unshift @linear_refs, $c;
-		$skip{$c} = 1;
-
-		# we only want the first parent to diff against for linear
-		# history, we save the rest to inject when we finalize the
-		# svn commit
-		my $fp_a = verify_ref("$c~1");
-		my $fp_b = shift @{$parents{$c}} if $parents{$c};
-		if (!$fp_a || !$fp_b) {
-			die "Commit $c\n",
-			    "has no parent commit, and therefore ",
-			    "nothing to diff against.\n",
-			    "You should be working from a repository ",
-			    "originally created by git-svn\n";
-		}
-		if ($fp_a ne $fp_b) {
-			die "$c~1 = $fp_a, however parsing commit $c ",
-			    "revealed that:\n$c~1 = $fp_b\nBUG!\n";
-		}
-
-		foreach my $p (@{$parents{$c}}) {
-			$skip{$p} = 1;
-		}
-	}
-	(\@linear_refs, \%parents);
 }
 
 sub find_file_type_and_diff_status {
@@ -1783,6 +1714,7 @@ sub fetch_all {
 		$repo_id = undef;
 		$repo_id = $gs->{repo_id};
 	}
+#print "...fetch all\n";
 	$remotes ||= read_all_remotes();
 	my $remote = $remotes->{$repo_id} or
 	             die "[svn-remote \"$repo_id\"] unknown\n";
@@ -2512,7 +2444,7 @@ sub get_commit_parents {
 	if (my $cur = ::verify_ref($self->refname.'^0')) {
 		push @tmp, $cur;
 	}
-	if (my $ipd = $self->{inject_parents_dcommit}) {
+	if (my $ipd = $self->{inject_parents_commit}) {
 		if (my $commit = delete $ipd->{$log_entry->{revision}}) {
 			push @tmp, @$commit;
 		}
@@ -2620,50 +2552,65 @@ sub do_git_commit {
 	my $lr = $self->last_rev;
 	if (defined $lr && $lr >= $log_entry->{revision}) {
 		die "Last fetched revision of ", $self->refname,
-		    " was r$lr, but we are about to fetch: ",
-		    "r$log_entry->{revision}!\n";
+		" was r$lr, but we are about to fetch: ",
+		"r$log_entry->{revision}!\n";
 	}
-	if (my $c = $self->rev_map_get($log_entry->{revision})) {
-		croak "$log_entry->{revision} = $c already exists! ",
-		      "Why are we refetching it?\n";
+	my ($commit, $committed_revision) = (-1,-1);
+	if (defined $self->{inject_commit}) {
+		# don't change any previous commits:
+		($commit, $committed_revision) = @{$self->{inject_commit}} 
 	}
-	my $old_env = set_commit_header_env($log_entry);
-	my $tree = $log_entry->{tree};
-	if (!defined $tree) {
-		$tree = $self->tmp_index_do(sub {
-		                            command_oneline('write-tree') });
-	}
-	die "Tree is not a valid sha1: $tree\n" if $tree !~ /^$::sha1$/o;
+	if ($committed_revision != $log_entry->{revision}) {
+#print "...do_git_commit new SVN revision $log_entry->{revision}\n";
+		# create a new tree and commit object
+		if (my $c = $self->rev_map_get($log_entry->{revision})) {
+			croak "$log_entry->{revision} = $c already exists! ",
+			"Why are we refetching it?\n";
+		}
+		my $old_env = set_commit_header_env($log_entry);
+		my $tree = $log_entry->{tree};
+		if (!defined $tree) {
+			$tree = $self->tmp_index_do(sub {
+					command_oneline('write-tree') });
+		}
+		die "Tree is not a valid sha1: $tree\n" if $tree !~ /^$::sha1$/o;
 
-	my @exec = ('git', 'commit-tree', $tree);
-	foreach ($self->get_commit_parents($log_entry)) {
-		push @exec, '-p', $_;
-	}
-	defined(my $pid = open3(my $msg_fh, my $out_fh, '>&STDERR', @exec))
-	                                                           or croak $!;
-	binmode $msg_fh;
+#print "last rev $self->{last_rev}\n" if (defined $self->{last_rev});
+#print "last commit $self->{last_commit} \n" if (defined $self->{last_commit});
+		my @exec = ('git', 'commit-tree', $tree);
+#print "...set parents ";
+		foreach ($self->get_commit_parents($log_entry)) {
+#print "$_ ";
+			push @exec, '-p', $_;
+		}
+#print "\n";
+		defined(my $pid = open3(my $msg_fh, my $out_fh, '>&STDERR', @exec))
+			or croak $!;
+		binmode $msg_fh;
 
-	# we always get UTF-8 from SVN, but we may want our commits in
-	# a different encoding.
-	if (my $enc = Git::config('i18n.commitencoding')) {
-		require Encode;
-		Encode::from_to($log_entry->{log}, 'UTF-8', $enc);
+		# we always get UTF-8 from SVN, but we may want our commits in
+		# a different encoding.
+		if (my $enc = Git::config('i18n.commitencoding')) {
+			require Encode;
+			Encode::from_to($log_entry->{log}, 'UTF-8', $enc);
+		}
+		print $msg_fh $log_entry->{log} or croak $!;
+		restore_commit_header_env($old_env);
+		$msg_fh->flush == 0 or croak $!;
+		close $msg_fh or croak $!;
+		chomp($commit = do { local $/; <$out_fh> });
+		close $out_fh or croak $!;
+		waitpid $pid, 0;
+		croak $? if $?;
+		if ($commit !~ /^$::sha1$/o) {
+			die "Failed to commit, invalid sha1: $commit\n";
+		}
 	}
-	print $msg_fh $log_entry->{log} or croak $!;
-	restore_commit_header_env($old_env);
-	unless ($self->no_metadata) {
-		print $msg_fh "\ngit-svn-id: $log_entry->{metadata}\n"
-		              or croak $!;
-	}
-	$msg_fh->flush == 0 or croak $!;
-	close $msg_fh or croak $!;
-	chomp(my $commit = do { local $/; <$out_fh> });
-	close $out_fh or croak $!;
-	waitpid $pid, 0;
-	croak $? if $?;
-	if ($commit !~ /^$::sha1$/o) {
-		die "Failed to commit, invalid sha1: $commit\n";
-	}
+
+	# use git-notes
+	command_oneline(qw/notes --ref=git-svn add -m/, "git-svn-id: $log_entry->{metadata}", $commit);
+	# tag it as well to easily access the revision
+	command_oneline(qw/tag/, "$Git::SVN::default_ref_id/r$log_entry->{revision}", $commit);
 
 	$self->rev_map_set($log_entry->{revision}, $commit, 1);
 
@@ -2671,9 +2618,9 @@ sub do_git_commit {
 	$self->{last_commit} = $commit;
 	print "r$log_entry->{revision}" unless $::_q > 1;
 	if (defined $log_entry->{svm_revision}) {
-		 print " (\@$log_entry->{svm_revision})" unless $::_q > 1;
-		 $self->rev_map_set($log_entry->{svm_revision}, $commit,
-		                   0, $self->svm_uuid);
+		print " (\@$log_entry->{svm_revision})" unless $::_q > 1;
+		$self->rev_map_set($log_entry->{svm_revision}, $commit,
+			0, $self->svm_uuid);
 	}
 	print " = $commit ($self->{ref_id})\n" unless $::_q > 1;
 	if (--$_gc_nr == 0) {
@@ -3498,6 +3445,7 @@ sub fetch {
 	my ($self, $min_rev, $max_rev, @parents) = @_;
 	my ($last_rev, $last_commit) = $self->last_rev_commit;
 	my ($base, $head) = $self->get_fetch_range($min_rev, $max_rev);
+#print "...fetch\n";
 	$self->ra->gs_fetch_loop_common($base, $head, [$self]);
 }
 
@@ -3519,7 +3467,8 @@ sub set_tree {
 	                tree_a => $self->{last_commit},
 	                tree_b => $tree,
 	                editor_cb => sub {
-			       $self->set_tree_cb($log_entry, $tree, @_) },
+							 $self->{inject_commit} = [$tree, $_[0]];
+							 $self->set_tree_cb($log_entry, $tree, @_) },
 	                svn_path => $self->{path} );
 	if (!SVN::Git::Editor->new(\%ed_opts)->apply_diff) {
 		print "No changes\nr$self->{last_rev} = $tree\n";
@@ -3562,7 +3511,7 @@ sub rebuild {
 	my ($base_rev, $head) = ($partial ? $self->rev_map_max_norebuild(1) :
 		(undef, undef));
 	my ($log, $ctx) =
-	    command_output_pipe(qw/rev-list --pretty=raw --no-color --reverse/,
+	    command_output_pipe(qw/rev-list --pretty=raw --no-color --reverse --notes=git-svn/,
 				($head ? "$head.." : "") . $self->refname,
 				'--');
 	my $metadata_url = $self->metadata_url;
@@ -5510,6 +5459,9 @@ sub cmt_showable {
 				$c->{a_raw} =~ /\@([a-f\d\-]+)>$/) {
 		@{$c->{l}} = ();
 		my @log = command(qw/cat-file commit/, $c->{c});
+		# use git-notes
+		my $note = eval { command_oneline([qw/notes --ref=git-svn show/, $c->{c}], STDERR => 0); };
+		push @log, $note;
 
 		# shift off the headers
 		shift @log while ($log[0] ne '');
@@ -5573,6 +5525,7 @@ sub git_svn_log_cmd {
 			push @cmd, '--boundary', "$c_min..$c_max";
 		}
 	}
+	push @cmd, '--notes=git-svn';
 	return (@cmd, @files);
 }
 
