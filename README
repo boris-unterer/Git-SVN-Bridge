@@ -1,0 +1,17 @@
+###########################
+Sa 10 Sep 2011 13:15:31 CEST
+git-bridge-svn: a git-svn without altering the commit hashes
+
+git-bridge-svn is derived from git-svn with the following breaking changes:
+* instead of using first-parent ancestors to find latest svn revision,
+	but scans all parents
+* git-svn dcommit is no longer available
+* git-svn commit is used instead, which first merges the latest upstream
+	changes and then pushes all local changes since the latest svn revision
+	as a single svn-commit
+* commit SHA is not changed on commit
+* git-notes and git-tag is used to annotate the svn revisions
+
+The bridge is not fully tested, but the commit command seems to work well.
+
+Boris Unterer
