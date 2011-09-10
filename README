@@ -10,8 +10,8 @@ git-svn supports a set of independent git repositories that push and pull to a c
 
 
                     .-----.
-						  | SVN |
-						  '-----'
+                    | SVN |
+                    '-----'
                   /    |    \        (connections are bi-directional)
              .---.   .---.   .---.
              |Git|   |Git|   |Git|
@@ -22,9 +22,9 @@ In contrast, git-bridgesvn supports a maintainer model, where one maintainer rev
 
 
                     .-----.
-						  | SVN |
-						  '-----'
-                       |    i       (connections are bi-directional) 
+                    | SVN |
+                    '-----'
+                       |            (connections are bi-directional) 
              .---.   .---.   .---.
              |Git| - |GIT| - |Git|
              '---'   '---'   '---'
