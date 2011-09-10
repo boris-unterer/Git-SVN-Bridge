@@ -1,8 +1,37 @@
 ###########################
-Sa 10 Sep 2011 13:15:31 CEST
-git-bridge-svn: a git-svn without altering the commit hashes
+Sa 10 Sep 2011 22:06:19 CEST
 
-git-bridge-svn is derived from git-svn with the following breaking changes:
+git-bridgesvn: a git-svn without altering the commit hashes
+===========================================================
+
+PURPOSE:
+The difference to the standard git-svn that comes with the git distribution is as follows:
+git-svn supports a set of independent git repositories that push and pull to a central SVN server. In other words, it uses git to have individual offline repositories of SVN that are not able to collaborate via git. Thus it supports a SVN offline workflow model, which for most cases is of little value.
+
+
+                    .-----.
+						  | SVN |
+						  '-----'
+                  /    |    \        (connections are bi-directional)
+             .---.   .---.   .---.
+             |Git|   |Git|   |Git|
+             '---'   '---'   '---'
+
+
+In contrast, git-bridgesvn supports a maintainer model, where one maintainer revises the pushes and fetches to and fro SVN, but the resultant git repository can be shared with other git users.
+
+
+                    .-----.
+						  | SVN |
+						  '-----'
+                       |    i       (connections are bi-directional) 
+             .---.   .---.   .---.
+             |Git| - |GIT| - |Git|
+             '---'   '---'   '---'
+                  (maintainer)
+
+DETAILS:
+git-bridgesvn is derived from git-svn with the following breaking changes:
 * instead of using first-parent ancestors to find latest svn revision,
 	but scans all parents
 * git-svn dcommit is no longer available
@@ -12,6 +41,13 @@ git-bridge-svn is derived from git-svn with the following breaking changes:
 * commit SHA is not changed on commit
 * git-notes and git-tag is used to annotate the svn revisions
 
-The bridge is not fully tested, but the commit command seems to work well.
+git-svn and git-bridgesvn are not compatible with each other and should not be combined.
 
+USAGE:
+The usage is mostly the same as git-svn, but instead of 'dcommit' it has a 'commit' command.
+
+STATUS:
+The bridge is not fully tested, but the commit and fetch commands seem to work well.
+
+Be free to comment and improve it
 Boris Unterer
