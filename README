@@ -44,7 +44,12 @@ git-bridgesvn is derived from git-svn with the following breaking changes:
 git-svn and git-bridgesvn are not compatible with each other and should not be combined.
 
 USAGE:
-The usage is mostly the same as git-svn, but instead of 'dcommit' it has a 'commit' command.
+The usage as git-svn, but with 'commit' instead of the 'dcommit' command:
+
+$ git bridgesvn commit [-m <message>]
+
+If no commit message is given, the configurated editor is opened. 
+The command is aborted on empty commits.
 
 STATUS:
 The bridge is not fully tested, but the commit and fetch commands seem to work well.
