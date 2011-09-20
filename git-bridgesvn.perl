@@ -149,7 +149,7 @@ my %cmd = (
 			  \%init_opts ],
 	commit => [ \&cmd_commit,
 	             'Commit several diffs to merge with upstream',
-			{ 'merge|m|M' => \$_merge,
+			{ 'message|m=s' => \$_message,
 			  'strategy|s=s' => \$_strategy,
 			  'verbose|v' => \$_verbose,
 			  'dry-run|n' => \$_dry_run,
@@ -499,6 +499,7 @@ sub cmd_set_tree {
 
 sub cmd_commit {
 	my $head = shift;
+
 	command_noisy(qw/update-index --refresh/);
 	git_cmd_try { command_oneline(qw/diff-index --quiet HEAD/) }
 		'Cannot commit with a dirty index.  Commit your changes first, '
@@ -543,6 +544,40 @@ sub cmd_commit {
 		    "merged history.";
 	}
 
+	# read commit message
+	my $log_message = $_message;
+	if (!defined $log_message) {
+		my $log_fh;
+		my $commit_msg = "$ENV{GIT_DIR}/COMMIT_MSG";
+		chomp(my $editor = command_oneline(qw(var GIT_EDITOR)));
+		system('sh', '-c', $editor.' "$@"', $editor, $commit_msg);
+		{
+			require Encode;
+			# SVN requires messages to be UTF-8 when entering the repo
+			local $/;
+			open $log_fh, '<', $commit_msg or
+				die "Aborting commit due to empty commit message.";
+			binmode $log_fh;
+			chomp($log_message = <$log_fh>);
+
+			my $enc = Git::config('i18n.commitencoding') || 'UTF-8';
+			my $msg = $log_message;
+
+			eval { $msg = Encode::decode($enc, $msg, 1) };
+			if ($@) {
+				die "Could not decode as $enc:\n", $msg,
+				"\nPerhaps you need to set i18n.commitencoding\n";
+			}
+
+			eval { $msg = Encode::encode('UTF-8', $msg, 1) };
+			die "Could not encode as UTF-8:\n$msg\n" if $@;
+
+			$log_message = $msg;
+			close $log_fh or croak $!;
+		}
+		unlink $commit_msg;
+	}
+
 	if (defined $_commit_url) {
 		$url = $_commit_url;
 	} else {
@@ -576,8 +611,9 @@ sub cmd_commit {
 	} else {
 		my $cmt_rev;
 		my $log_entry = get_commit_entry($d);
+		$log_message ||= $log_entry->{log};
 		my %ed_opts = ( r => $last_commit,
-		                log => $log_entry->{log},
+		                log => $log_message,
 		                ra => Git::SVN::Ra->new($url),
 		                config => SVN::Core::config_get_config(
 		                        $Git::SVN::Ra::config_dir
