@@ -9,10 +9,10 @@ The difference to the standard git-svn that comes with the git distribution is a
 git-svn supports a set of independent git repositories that push and pull to a central SVN server. In other words, it uses git to have individual offline repositories of SVN that are not able to collaborate via git. Thus it supports a SVN offline workflow model, which for most cases is of little value.
 
 
-                    .-----.
-                    | SVN |
+ git-svn:           .-----.
+ --------           | SVN |
                     '-----'
-                  /    |    \        (connections are bi-directional)
+                  /    |    \        (bi-directional connections)
              .---.   .---.   .---.
              |Git|   |Git|   |Git|
              '---'   '---'   '---'
@@ -21,10 +21,10 @@ git-svn supports a set of independent git repositories that push and pull to a c
 In contrast, git-bridgesvn supports a maintainer model, where one maintainer revises the pushes and fetches to and fro SVN, but the resultant git repository can be shared with other git users.
 
 
-                    .-----.
-                    | SVN |
+ git-bridgesvn:     .-----.
+ --------------     | SVN |
                     '-----'
-                       |            (connections are bi-directional) 
+                       |            (bi-directional connectinosb) 
              .---.   .---.   .---.
              |Git| - |GIT| - |Git|
              '---'   '---'   '---'
@@ -46,10 +46,11 @@ git-svn and git-bridgesvn are not compatible with each other and should not be c
 USAGE:
 The usage as git-svn, but with 'commit' instead of the 'dcommit' command:
 
-$ git bridgesvn commit [-m <message>]
+'git bridgesvn commit' ['-m' message] [treeish]
 
 If no commit message is given, the configurated editor is opened. 
 The command is aborted on empty commits.
+If no treeish is specified, HEAD is assumed.
 
 STATUS:
 The bridge is not fully tested, but the commit and fetch commands seem to work well.
